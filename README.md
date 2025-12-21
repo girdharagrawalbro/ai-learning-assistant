@@ -2,7 +2,8 @@
 
 An interactive educational web application that leverages Google's Gemini AI to help students learn more effectively. Features include an AI chatbot for answering questions, automatic quiz generation from study materials, and personalized learning paths with progress tracking.
 
-<img width="1366" height="728" alt="image" src="https://github.com/user-attachments/assets/26c6a88a-fd1b-4a46-8a13-ea24dc086f1e" />
+<img width="2108" height="991" alt="image" src="https://github.com/user-attachments/assets/5235d751-db9a-4e4a-998f-45d0344a20d4" />
+
 
 
 ## 🌟 Features
