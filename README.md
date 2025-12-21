@@ -2,7 +2,8 @@
 
 An interactive educational web application that leverages Google's Gemini AI to help students learn more effectively. Features include an AI chatbot for answering questions, automatic quiz generation from study materials, and personalized learning paths with progress tracking.
 
-![AI Study Buddy Banner](https://via.placeholder.com/1200x400/667eea/ffffff?text=AI+Study+Buddy)
+<img width="1366" height="728" alt="image" src="https://github.com/user-attachments/assets/26c6a88a-fd1b-4a46-8a13-ea24dc086f1e" />
+
 
 ## 🌟 Features
 
