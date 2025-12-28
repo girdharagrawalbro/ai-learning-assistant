@@ -71,6 +71,9 @@ const RevisionMode: React.FC = () => {
   // Mock test state
   const [isGeneratingMockTest, setIsGeneratingMockTest] = useState(false);
   const [mockTestGenerated, setMockTestGenerated] = useState(false);
+  const [selectedMaterials, setSelectedMaterials] = useState<string[]>([]); // Content IDs
+  const [selectedTopics, setSelectedTopics] = useState<string[]>([]); // Topic names
+  const [mockTestQuestions, setMockTestQuestions] = useState(20);
   
   // Revision schedule state
   const [activeRevisionTab, setActiveRevisionTab] = useState<'flashcards' | 'schedule' | 'mocktest'>('flashcards');
@@ -281,10 +284,28 @@ const RevisionMode: React.FC = () => {
     }
   };
 
-  // Generate mock test from uploaded content
+  // Generate mock test from stored content
   const handleGenerateMockTest = async () => {
-    if (!uploadedContent || !user) {
-      setError('Please upload study material first and make sure you are logged in.');
+    if (!user) {
+      setError('Please log in to generate a mock test.');
+      return;
+    }
+
+    // Get content to use for mock test
+    let contentToUse: StoredContent[] = [];
+    
+    if (selectedMaterials.length > 0) {
+      // Use selected materials
+      contentToUse = storedContents.filter(c => selectedMaterials.includes(c.id));
+    } else if (storedContents.length > 0) {
+      // Use all stored contents if none selected
+      contentToUse = storedContents;
+    } else if (uploadedContent) {
+      // Fallback to uploaded content if no stored contents
+      setError('Please select study materials for the mock test.');
+      return;
+    } else {
+      setError('Please upload study materials first.');
       return;
     }
 
@@ -292,29 +313,60 @@ const RevisionMode: React.FC = () => {
     setError(null);
 
     try {
+      // Combine content from all selected materials
+      let combinedContent = '';
+      let allTopics: string[] = [];
+      
+      contentToUse.forEach(content => {
+        // If specific topics are selected, filter content
+        if (selectedTopics.length > 0) {
+          const relevantTopics = content.topics.filter(t => selectedTopics.includes(t.name));
+          if (relevantTopics.length > 0) {
+            combinedContent += relevantTopics.map(t => t.content).join('\n\n');
+            allTopics.push(...relevantTopics.map(t => t.name));
+          }
+        } else {
+          // Use all content from the material
+          combinedContent += content.content.substring(0, 5000) + '\n\n';
+          allTopics.push(...content.topics.map(t => t.name));
+        }
+      });
+
+      if (!combinedContent.trim()) {
+        setError('No content found for selected topics. Please select different materials.');
+        setIsGeneratingMockTest(false);
+        return;
+      }
+
+      const subject = allTopics.length > 0 ? allTopics.slice(0, 3).join(', ') : 'General';
+      
       const questions = await generateQuizFromContent(
-        uploadedContent.content,
-        20,
+        combinedContent,
+        mockTestQuestions,
         'medium',
-        uploadedContent.concepts[0] || 'General'
+        subject
       );
 
       const quiz: Quiz = {
         id: '',
         userId: user.id,
-        title: `Mock Test: ${uploadedContent.name}`,
-        subject: uploadedContent.concepts[0] || 'General',
+        title: `Mock Test: ${contentToUse.map(c => c.title).join(', ').substring(0, 50)}`,
+        subject: subject,
         questions,
         createdAt: new Date(),
-        sourceContent: uploadedContent.name,
+        sourceContent: contentToUse.map(c => c.fileName).join(', '),
         difficulty: 'medium'
       };
 
       const quizId = await saveQuiz(quiz);
-      quiz.id = quizId;
+      const savedQuiz = { ...quiz, id: quizId };
 
-      setQuizzes(prev => [quiz, ...prev]);
+      setQuizzes(prev => [savedQuiz, ...prev]);
       setMockTestGenerated(true);
+      
+      // Reset selections
+      setSelectedMaterials([]);
+      setSelectedTopics([]);
       
       setTimeout(() => setMockTestGenerated(false), 3000);
     } catch (err) {
@@ -323,6 +375,31 @@ const RevisionMode: React.FC = () => {
     } finally {
       setIsGeneratingMockTest(false);
     }
+  };
+
+  const toggleMaterialSelection = (contentId: string) => {
+    setSelectedMaterials(prev => 
+      prev.includes(contentId) 
+        ? prev.filter(id => id !== contentId)
+        : [...prev, contentId]
+    );
+  };
+
+  const toggleTopicSelection = (topicName: string) => {
+    setSelectedTopics(prev => 
+      prev.includes(topicName) 
+        ? prev.filter(t => t !== topicName)
+        : [...prev, topicName]
+    );
+  };
+
+  const selectAllMaterials = () => {
+    setSelectedMaterials(storedContents.map(c => c.id));
+  };
+
+  const clearSelections = () => {
+    setSelectedMaterials([]);
+    setSelectedTopics([]);
   };
 
   const handleReset = () => {
@@ -1009,79 +1086,179 @@ const RevisionMode: React.FC = () => {
       {/* Mock Test Tab Content */}
       {activeRevisionTab === 'mocktest' && (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          <div className="lg:col-span-2">
+          <div className="lg:col-span-2 space-y-6">
+            {/* Material Selection */}
             <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
-              <div className="flex items-center gap-3 mb-6">
-                <div className="w-12 h-12 bg-gradient-to-br from-purple-500 to-purple-600 rounded-xl flex items-center justify-center">
-                  <Target className="w-6 h-6 text-white" />
-                </div>
-                <div>
-                  <h3 className="font-semibold text-gray-800 text-lg">Comprehensive Mock Test</h3>
-                  <p className="text-sm text-gray-500">Test yourself with questions from all your study materials</p>
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="font-semibold text-gray-800 flex items-center gap-2">
+                  <FileText className="w-5 h-5 text-purple-600" />
+                  Select Study Materials
+                </h3>
+                <div className="flex gap-2">
+                  <button
+                    onClick={selectAllMaterials}
+                    className="text-xs px-3 py-1.5 bg-purple-100 text-purple-700 rounded-lg hover:bg-purple-200 transition-colors"
+                  >
+                    Select All
+                  </button>
+                  <button
+                    onClick={clearSelections}
+                    className="text-xs px-3 py-1.5 bg-gray-100 text-gray-600 rounded-lg hover:bg-gray-200 transition-colors"
+                  >
+                    Clear
+                  </button>
                 </div>
               </div>
 
               {storedContents.length > 0 ? (
-                <div className="space-y-4">
-                  <p className="text-sm text-gray-600 mb-4">
-                    Generate a mock test from your saved study materials. The test will include questions from all topics you've uploaded.
-                  </p>
-                  
-                  <div className="bg-gray-50 rounded-xl p-4 mb-4">
-                    <h4 className="font-medium text-gray-800 mb-3">Available Topics for Mock Test:</h4>
-                    <div className="flex flex-wrap gap-2">
-                      {storedContents.flatMap(c => c.topics.slice(0, 3)).slice(0, 12).map((topic, i) => (
-                        <span key={i} className="px-2 py-1 bg-purple-100 text-purple-700 rounded text-xs">
-                          {topic.name}
-                        </span>
-                      ))}
-                      {storedContents.flatMap(c => c.topics).length > 12 && (
-                        <span className="px-2 py-1 bg-gray-200 text-gray-600 rounded text-xs">
-                          +{storedContents.flatMap(c => c.topics).length - 12} more
-                        </span>
-                      )}
-                    </div>
-                  </div>
-
-                  {mockTestGenerated ? (
-                    <div className="w-full py-4 bg-green-100 text-green-700 rounded-xl font-medium flex items-center justify-center gap-2">
-                      <CheckCircle className="w-5 h-5" />
-                      Mock Test Created! Check Quiz Generator.
-                    </div>
-                  ) : (
-                    <button 
-                      onClick={handleGenerateMockTest}
-                      disabled={isGeneratingMockTest}
-                      className="w-full py-4 bg-purple-600 hover:bg-purple-700 text-white rounded-xl font-medium transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
+                <div className="space-y-3">
+                  {storedContents.map((content) => (
+                    <div
+                      key={content.id}
+                      onClick={() => toggleMaterialSelection(content.id)}
+                      className={`p-4 rounded-xl border-2 cursor-pointer transition-all ${
+                        selectedMaterials.includes(content.id)
+                          ? 'border-purple-500 bg-purple-50'
+                          : 'border-gray-200 hover:border-purple-300'
+                      }`}
                     >
-                      {isGeneratingMockTest ? (
-                        <>
-                          <Loader2 className="w-5 h-5 animate-spin" />
-                          Generating 20 Questions...
-                        </>
-                      ) : (
-                        <>
-                          <Sparkles className="w-5 h-5" />
-                          Generate Mock Test (20 Questions)
-                        </>
-                      )}
-                    </button>
-                  )}
+                      <div className="flex items-start gap-3">
+                        <div className={`w-5 h-5 rounded border-2 flex items-center justify-center flex-shrink-0 mt-0.5 ${
+                          selectedMaterials.includes(content.id)
+                            ? 'bg-purple-600 border-purple-600'
+                            : 'border-gray-300'
+                        }`}>
+                          {selectedMaterials.includes(content.id) && (
+                            <CheckCircle className="w-3 h-3 text-white" />
+                          )}
+                        </div>
+                        <div className="flex-1">
+                          <p className="font-medium text-gray-800">{content.title}</p>
+                          <p className="text-xs text-gray-500">{content.fileName} · {content.topics.length} topics</p>
+                          <div className="flex flex-wrap gap-1 mt-2">
+                            {content.topics.slice(0, 4).map((topic, i) => (
+                              <span key={i} className="px-2 py-0.5 bg-gray-100 text-gray-600 rounded text-xs">
+                                {topic.name}
+                              </span>
+                            ))}
+                            {content.topics.length > 4 && (
+                              <span className="text-xs text-gray-400">+{content.topics.length - 4} more</span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
                 </div>
               ) : (
                 <div className="text-center py-8">
-                  <div className="w-16 h-16 bg-gray-100 rounded-2xl flex items-center justify-center mx-auto mb-4">
-                    <FileText className="w-8 h-8 text-gray-400" />
-                  </div>
-                  <p className="text-gray-600 font-medium">No study materials yet</p>
-                  <p className="text-sm text-gray-500 mt-1">Upload PDFs or documents to generate mock tests</p>
+                  <FileText className="w-12 h-12 text-gray-300 mx-auto mb-3" />
+                  <p className="text-gray-500">No study materials uploaded yet</p>
                   <button
-                    onClick={() => setActiveTab('Quiz Generator')}
-                    className="mt-4 px-4 py-2 bg-purple-600 text-white rounded-lg text-sm font-medium hover:bg-purple-700"
+                    onClick={() => setActiveTab('quiz')}
+                    className="mt-3 px-4 py-2 bg-purple-600 text-white rounded-lg text-sm font-medium hover:bg-purple-700"
                   >
                     Upload Materials
                   </button>
                 </div>
+              )}
+            </div>
+
+            {/* Topic Selection (if materials selected) */}
+            {selectedMaterials.length > 0 && (
+              <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
+                <h3 className="font-semibold text-gray-800 mb-4 flex items-center gap-2">
+                  <Brain className="w-5 h-5 text-blue-600" />
+                  Select Specific Topics (Optional)
+                </h3>
+                <p className="text-sm text-gray-500 mb-4">
+                  Leave empty to include all topics, or select specific topics to focus on.
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  {storedContents
+                    .filter(c => selectedMaterials.includes(c.id))
+                    .flatMap(c => c.topics)
+                    .map((topic, i) => (
+                      <button
+                        key={i}
+                        onClick={() => toggleTopicSelection(topic.name)}
+                        className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                          selectedTopics.includes(topic.name)
+                            ? 'bg-blue-600 text-white'
+                            : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                        }`}
+                      >
+                        {topic.name}
+                      </button>
+                    ))}
+                </div>
+                {selectedTopics.length > 0 && (
+                  <p className="text-sm text-blue-600 mt-3">
+                    {selectedTopics.length} topic{selectedTopics.length !== 1 ? 's' : ''} selected
+                  </p>
+                )}
+              </div>
+            )}
+
+            {/* Generate Button */}
+            <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
+              <div className="flex items-center gap-3 mb-4">
+                <div className="w-12 h-12 bg-gradient-to-br from-purple-500 to-purple-600 rounded-xl flex items-center justify-center">
+                  <Target className="w-6 h-6 text-white" />
+                </div>
+                <div>
+                  <h3 className="font-semibold text-gray-800 text-lg">Generate Mock Test</h3>
+                  <p className="text-sm text-gray-500">
+                    {selectedMaterials.length > 0 
+                      ? `${selectedMaterials.length} material(s) selected`
+                      : 'Select materials above to generate a test'}
+                  </p>
+                </div>
+              </div>
+
+              {/* Question Count Selector */}
+              <div className="mb-4">
+                <label className="text-sm font-medium text-gray-700 mb-2 block">Number of Questions</label>
+                <div className="flex gap-2">
+                  {[10, 15, 20, 30].map(num => (
+                    <button
+                      key={num}
+                      onClick={() => setMockTestQuestions(num)}
+                      className={`flex-1 py-2 rounded-lg text-sm font-medium transition-colors ${
+                        mockTestQuestions === num
+                          ? 'bg-purple-600 text-white'
+                          : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                      }`}
+                    >
+                      {num}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {mockTestGenerated ? (
+                <div className="w-full py-4 bg-green-100 text-green-700 rounded-xl font-medium flex items-center justify-center gap-2">
+                  <CheckCircle className="w-5 h-5" />
+                  Mock Test Created! Check Quiz Generator.
+                </div>
+              ) : (
+                <button 
+                  onClick={handleGenerateMockTest}
+                  disabled={isGeneratingMockTest || selectedMaterials.length === 0}
+                  className="w-full py-4 bg-purple-600 hover:bg-purple-700 text-white rounded-xl font-medium transition-colors flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {isGeneratingMockTest ? (
+                    <>
+                      <Loader2 className="w-5 h-5 animate-spin" />
+                      Generating {mockTestQuestions} Questions...
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles className="w-5 h-5" />
+                      Generate Mock Test ({mockTestQuestions} Questions)
+                    </>
+                  )}
+                </button>
               )}
             </div>
           </div>
@@ -1096,30 +1273,67 @@ const RevisionMode: React.FC = () => {
                     <Target className="w-4 h-4 text-purple-600" />
                   </div>
                   <div>
-                    <p className="font-medium text-gray-800 text-sm">20 Mixed Questions</p>
-                    <p className="text-xs text-gray-500">From all your uploaded materials</p>
+                    <p className="font-medium text-gray-800 text-sm">Custom Question Count</p>
+                    <p className="text-xs text-gray-500">10, 15, 20, or 30 questions</p>
                   </div>
                 </div>
                 <div className="flex items-start gap-3">
                   <div className="w-8 h-8 bg-blue-100 rounded-lg flex items-center justify-center flex-shrink-0">
-                    <Brain className="w-4 h-4 text-blue-600" />
+                    <FileText className="w-4 h-4 text-blue-600" />
                   </div>
                   <div>
-                    <p className="font-medium text-gray-800 text-sm">Focus on Weak Areas</p>
-                    <p className="text-xs text-gray-500">More questions from struggling topics</p>
+                    <p className="font-medium text-gray-800 text-sm">Select Materials</p>
+                    <p className="text-xs text-gray-500">Choose specific PDFs or all</p>
                   </div>
                 </div>
                 <div className="flex items-start gap-3">
                   <div className="w-8 h-8 bg-green-100 rounded-lg flex items-center justify-center flex-shrink-0">
-                    <TrendingUp className="w-4 h-4 text-green-600" />
+                    <Brain className="w-4 h-4 text-green-600" />
+                  </div>
+                  <div>
+                    <p className="font-medium text-gray-800 text-sm">Topic Filtering</p>
+                    <p className="text-xs text-gray-500">Focus on specific topics</p>
+                  </div>
+                </div>
+                <div className="flex items-start gap-3">
+                  <div className="w-8 h-8 bg-orange-100 rounded-lg flex items-center justify-center flex-shrink-0">
+                    <TrendingUp className="w-4 h-4 text-orange-600" />
                   </div>
                   <div>
                     <p className="font-medium text-gray-800 text-sm">Track Progress</p>
-                    <p className="text-xs text-gray-500">Results saved to your analytics</p>
+                    <p className="text-xs text-gray-500">Results saved to analytics</p>
                   </div>
                 </div>
               </div>
             </div>
+
+            {/* Selection Summary */}
+            {selectedMaterials.length > 0 && (
+              <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
+                <h4 className="font-semibold text-gray-800 mb-4 flex items-center gap-2">
+                  <CheckCircle className="w-5 h-5 text-green-600" />
+                  Selection Summary
+                </h4>
+                <div className="space-y-3 text-sm">
+                  <div className="flex justify-between items-center">
+                    <span className="text-gray-600">Materials:</span>
+                    <span className="font-medium text-gray-800">{selectedMaterials.length}</span>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span className="text-gray-600">Topics:</span>
+                    <span className="font-medium text-gray-800">
+                      {selectedTopics.length > 0 
+                        ? selectedTopics.length
+                        : storedContents.filter(c => selectedMaterials.includes(c.id)).flatMap(c => c.topics).length}
+                    </span>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span className="text-gray-600">Questions:</span>
+                    <span className="font-medium text-gray-800">{mockTestQuestions}</span>
+                  </div>
+                </div>
+              </div>
+            )}
 
             {/* Weekly/Monthly Schedule */}
             <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
