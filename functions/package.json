@@ -14,9 +14,10 @@
   "main": "lib/index.js",
   "dependencies": {
     "@google/generative-ai": "^0.21.0",
+    "cors": "^2.8.5",
     "firebase-admin": "^11.11.1",
     "firebase-functions": "^4.5.0",
-    "cors": "^2.8.5"
+    "firebase-tools": "^15.1.0"
   },
   "devDependencies": {
     "@types/cors": "^2.8.17",

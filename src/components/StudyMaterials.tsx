@@ -17,6 +17,14 @@ import { useApp } from '../context/AppContext';
 import { saveStudyMaterial, deleteStudyMaterial } from '../services/firebaseService';
 import { extractKeyConcepts, summarizeContent } from '../services/geminiService';
 import { StudyMaterial } from '../types';
+import * as pdfjsLib from 'pdfjs-dist';
+import mammoth from 'mammoth';
+
+// Set up PDF.js worker for v5
+pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
+  'pdfjs-dist/build/pdf.worker.min.mjs',
+  import.meta.url
+).toString();
 
 const StudyMaterials: React.FC = () => {
   const { user, studyMaterials, setStudyMaterials } = useApp();
@@ -38,30 +46,71 @@ const StudyMaterials: React.FC = () => {
     tagInput: ''
   });
 
+  const readFileContent = async (file: File): Promise<string> => {
+    const extension = file.name.split('.').pop()?.toLowerCase();
+    
+    // Handle PDF files
+    if (extension === 'pdf') {
+      const arrayBuffer = await file.arrayBuffer();
+      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+      let fullText = '';
+      
+      for (let i = 1; i <= pdf.numPages; i++) {
+        const page = await pdf.getPage(i);
+        const textContent = await page.getTextContent();
+        const pageText = textContent.items
+          .map((item: any) => item.str)
+          .join(' ');
+        fullText += pageText + '\n';
+      }
+      
+      return fullText.trim();
+    }
+    
+    // Handle DOC/DOCX files
+    if (extension === 'doc' || extension === 'docx') {
+      const arrayBuffer = await file.arrayBuffer();
+      const result = await mammoth.extractRawText({ arrayBuffer });
+      return result.value;
+    }
+    
+    // Handle text files (.txt, .md)
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const content = e.target?.result as string;
+        resolve(content);
+      };
+      reader.onerror = reject;
+      reader.readAsText(file);
+    });
+  };
+
   const onDrop = useCallback(async (acceptedFiles: File[]) => {
     if (acceptedFiles.length === 0) return;
     
     const file = acceptedFiles[0];
-    const reader = new FileReader();
-    
-    reader.onload = (e) => {
-      const content = e.target?.result as string;
+    try {
+      const content = await readFileContent(file);
       setUploadData(prev => ({
         ...prev,
         title: file.name.replace(/\.[^/.]+$/, ''),
         content
       }));
       setShowUploadForm(true);
-    };
-    
-    reader.readAsText(file);
+    } catch (error) {
+      console.error('Error reading file:', error);
+    }
   }, []);
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
     accept: {
       'text/plain': ['.txt'],
-      'text/markdown': ['.md']
+      'text/markdown': ['.md'],
+      'application/pdf': ['.pdf'],
+      'application/msword': ['.doc'],
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['.docx']
     },
     maxFiles: 1
   });

@@ -13,7 +13,9 @@ import {
   Loader2,
   Lightbulb,
   Brain,
-  Award
+  Award,
+  Zap,
+  Play
 } from 'lucide-react';
 import {
   LineChart,
@@ -28,16 +30,23 @@ import {
   Cell
 } from 'recharts';
 import { useApp } from '../context/AppContext';
-import { generateStudyRecommendations } from '../services/geminiService';
-import { getLearningProgress, getQuizAttempts } from '../services/firebaseService';
-import { StudyRecommendation, QuizAttempt } from '../types';
+import { generateStudyRecommendations, generateWeakTopicQuiz, generateLearningPath } from '../services/geminiService';
+import { getLearningProgress, getQuizAttempts, saveQuiz } from '../services/firebaseService';
+import { StudyRecommendation, QuizAttempt, Quiz } from '../types';
 
 const LearningPath: React.FC = () => {
-  const { user, learningProgress, setLearningProgress } = useApp();
+  const { user, learningProgress, setLearningProgress, setQuizzes, setActiveTab, navigateToChatWithMessage } = useApp();
   const [recommendations, setRecommendations] = useState<StudyRecommendation[]>([]);
   const [quizHistory, setQuizHistory] = useState<QuizAttempt[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [activeSection, setActiveSection] = useState<'overview' | 'progress' | 'recommendations'>('overview');
+  const [activeSection, setActiveSection] = useState<'overview' | 'progress' | 'recommendations' | 'learning-path'>('overview');
+  const [isGeneratingQuiz, setIsGeneratingQuiz] = useState(false);
+  const [isGeneratingPath, setIsGeneratingPath] = useState(false);
+  const [generatedPath, setGeneratedPath] = useState<{
+    steps: { title: string; description: string; estimatedTime: number; type: 'review' | 'practice' | 'quiz' }[];
+    weeklyGoals: string[];
+    focusAreas: string[];
+  } | null>(null);
 
   useEffect(() => {
     if (user) {
@@ -73,6 +82,62 @@ const LearningPath: React.FC = () => {
       console.error('Error loading data:', error);
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  // Generate quiz for weak topics
+  const handleGenerateWeakTopicQuiz = async () => {
+    if (!user || !learningProgress?.weakTopics.length) return;
+    
+    setIsGeneratingQuiz(true);
+    try {
+      const questions = await generateWeakTopicQuiz(
+        learningProgress.weakTopics,
+        10
+      );
+
+      const quiz: Quiz = {
+        id: '',
+        userId: user.id,
+        title: `Weak Topics Practice: ${new Date().toLocaleDateString()}`,
+        subject: 'Mixed - Weak Topics',
+        questions,
+        createdAt: new Date(),
+        sourceContent: 'AI Generated for weak topics',
+        difficulty: 'medium'
+      };
+
+      const quizId = await saveQuiz(quiz);
+      quiz.id = quizId;
+      
+      setQuizzes(prev => [quiz, ...prev]);
+      
+      // Navigate to quiz
+      setActiveTab('quizzes');
+    } catch (error) {
+      console.error('Error generating weak topic quiz:', error);
+    } finally {
+      setIsGeneratingQuiz(false);
+    }
+  };
+
+  // Generate personalized learning path
+  const handleGenerateLearningPath = async () => {
+    if (!user) return;
+    
+    setIsGeneratingPath(true);
+    try {
+      const path = await generateLearningPath(
+        learningProgress?.weakTopics || [],
+        learningProgress?.strongTopics || [],
+        [], // study materials could be added here
+        learningProgress?.averageScore || 0
+      );
+      setGeneratedPath(path);
+    } catch (error) {
+      console.error('Error generating learning path:', error);
+    } finally {
+      setIsGeneratingPath(false);
     }
   };
 
@@ -138,7 +203,8 @@ const LearningPath: React.FC = () => {
           {[
             { id: 'overview', label: 'Overview', icon: <TrendingUp className="w-4 h-4" /> },
             { id: 'progress', label: 'Progress', icon: <BookOpen className="w-4 h-4" /> },
-            { id: 'recommendations', label: 'Recommendations', icon: <Lightbulb className="w-4 h-4" /> }
+            { id: 'recommendations', label: 'AI Recommendations', icon: <Lightbulb className="w-4 h-4" /> },
+            { id: 'learning-path', label: 'My Path', icon: <Target className="w-4 h-4" /> }
           ].map(tab => (
             <button
               key={tab.id}
@@ -377,26 +443,28 @@ const LearningPath: React.FC = () => {
       {/* Recommendations Section */}
       {activeSection === 'recommendations' && (
         <div className="bg-white rounded-xl shadow p-6">
-          <h3 className="font-semibold text-gray-800 mb-6 flex items-center gap-2">
+          <h3 className="font-semibold text-gray-800 mb-4 flex items-center gap-2">
             <Lightbulb className="w-5 h-5 text-yellow-500" />
             AI-Powered Study Recommendations
           </h3>
+          <p className="text-sm text-gray-500 mb-6">Click any topic to learn with AI Study Buddy</p>
           
           {recommendations.length > 0 ? (
             <div className="space-y-4">
               {recommendations.map((rec, index) => (
                 <div
                   key={index}
-                  className={`p-5 rounded-xl border-l-4 ${
+                  onClick={() => navigateToChatWithMessage(`I need help with "${rec.topic}" (${rec.subject}). ${rec.reason} Please provide a comprehensive explanation with examples and practice exercises.`)}
+                  className={`p-5 rounded-xl border-l-4 cursor-pointer transition-all hover:shadow-md ${
                     rec.priority === 'high'
-                      ? 'bg-red-50 border-red-500'
+                      ? 'bg-red-50 border-red-500 hover:bg-red-100'
                       : rec.priority === 'medium'
-                      ? 'bg-yellow-50 border-yellow-500'
-                      : 'bg-green-50 border-green-500'
+                      ? 'bg-yellow-50 border-yellow-500 hover:bg-yellow-100'
+                      : 'bg-green-50 border-green-500 hover:bg-green-100'
                   }`}
                 >
                   <div className="flex items-start justify-between">
-                    <div>
+                    <div className="flex-1">
                       <div className="flex items-center gap-2 mb-1">
                         <h4 className="font-semibold text-gray-800">{rec.topic}</h4>
                         <span className={`text-xs px-2 py-0.5 rounded-full ${
@@ -412,11 +480,12 @@ const LearningPath: React.FC = () => {
                       <p className="text-sm text-gray-500 mb-1">{rec.subject}</p>
                       <p className="text-gray-700">{rec.reason}</p>
                     </div>
-                    <div className="text-right">
+                    <div className="flex flex-col items-end gap-2">
                       <div className="flex items-center gap-1 text-gray-500">
                         <Clock className="w-4 h-4" />
                         <span className="text-sm">{rec.estimatedTime} min</span>
                       </div>
+                      <ChevronRight className="w-5 h-5 text-gray-400" />
                     </div>
                   </div>
                   
@@ -447,6 +516,189 @@ const LearningPath: React.FC = () => {
               </p>
             </div>
           )}
+        </div>
+      )}
+
+      {/* Learning Path Section */}
+      {activeSection === 'learning-path' && (
+        <div className="space-y-6">
+          {/* Quick Actions */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {/* Generate Weak Topic Quiz */}
+            <div className="bg-gradient-to-br from-red-500 to-orange-500 rounded-2xl p-6 text-white">
+              <div className="flex items-center gap-3 mb-4">
+                <div className="w-12 h-12 bg-white/20 rounded-xl flex items-center justify-center">
+                  <Zap className="w-6 h-6" />
+                </div>
+                <div>
+                  <h3 className="font-semibold text-lg">Practice Weak Topics</h3>
+                  <p className="text-sm text-white/80">AI-generated quiz for your weak areas</p>
+                </div>
+              </div>
+              
+              {learningProgress?.weakTopics && learningProgress.weakTopics.length > 0 ? (
+                <>
+                  <div className="mb-4">
+                    <p className="text-xs text-white/70 mb-2">Topics to practice:</p>
+                    <div className="flex flex-wrap gap-1">
+                      {learningProgress.weakTopics.slice(0, 5).map((topic, i) => (
+                        <span key={i} className="px-2 py-1 bg-white/20 rounded text-xs">{topic}</span>
+                      ))}
+                    </div>
+                  </div>
+                  <button
+                    onClick={handleGenerateWeakTopicQuiz}
+                    disabled={isGeneratingQuiz}
+                    className="w-full py-3 bg-white text-orange-600 rounded-xl font-semibold hover:bg-white/90 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+                  >
+                    {isGeneratingQuiz ? (
+                      <>
+                        <Loader2 className="w-5 h-5 animate-spin" />
+                        Generating Quiz...
+                      </>
+                    ) : (
+                      <>
+                        <Play className="w-5 h-5" />
+                        Generate Practice Quiz
+                      </>
+                    )}
+                  </button>
+                </>
+              ) : (
+                <p className="text-white/80 text-sm">Complete more quizzes to identify weak topics</p>
+              )}
+            </div>
+
+            {/* Generate Learning Path */}
+            <div className="bg-gradient-to-br from-purple-500 to-indigo-600 rounded-2xl p-6 text-white">
+              <div className="flex items-center gap-3 mb-4">
+                <div className="w-12 h-12 bg-white/20 rounded-xl flex items-center justify-center">
+                  <Target className="w-6 h-6" />
+                </div>
+                <div>
+                  <h3 className="font-semibold text-lg">Personalized Learning Path</h3>
+                  <p className="text-sm text-white/80">AI-generated weekly study plan</p>
+                </div>
+              </div>
+              
+              <p className="text-sm text-white/80 mb-4">
+                Get a customized study plan based on your performance, weak areas, and learning goals.
+              </p>
+              
+              <button
+                onClick={handleGenerateLearningPath}
+                disabled={isGeneratingPath}
+                className="w-full py-3 bg-white text-purple-600 rounded-xl font-semibold hover:bg-white/90 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                {isGeneratingPath ? (
+                  <>
+                    <Loader2 className="w-5 h-5 animate-spin" />
+                    Generating Path...
+                  </>
+                ) : (
+                  <>
+                    <Brain className="w-5 h-5" />
+                    Generate My Path
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+
+          {/* Generated Learning Path */}
+          {generatedPath && (
+            <div className="bg-white rounded-2xl shadow-lg p-6">
+              <h3 className="font-semibold text-gray-800 text-lg mb-4 flex items-center gap-2">
+                <Target className="w-5 h-5 text-purple-500" />
+                Your Weekly Learning Path
+              </h3>
+
+              {/* Weekly Goals */}
+              <div className="mb-6 p-4 bg-purple-50 rounded-xl">
+                <h4 className="font-medium text-purple-800 mb-2">🎯 Weekly Goals</h4>
+                <ul className="space-y-1">
+                  {generatedPath.weeklyGoals.map((goal, i) => (
+                    <li key={i} className="flex items-center gap-2 text-sm text-purple-700">
+                      <CheckCircle className="w-4 h-4" />
+                      {goal}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+
+              {/* Focus Areas */}
+              <div className="mb-6 p-4 bg-orange-50 rounded-xl">
+                <h4 className="font-medium text-orange-800 mb-2">🔥 Focus Areas</h4>
+                <div className="flex flex-wrap gap-2">
+                  {generatedPath.focusAreas.map((area, i) => (
+                    <span key={i} className="px-3 py-1 bg-orange-100 text-orange-700 rounded-lg text-sm font-medium">
+                      {area}
+                    </span>
+                  ))}
+                </div>
+              </div>
+
+              {/* Learning Steps */}
+              <div className="space-y-3">
+                <h4 className="font-medium text-gray-800">📚 Study Steps</h4>
+                {generatedPath.steps.map((step, index) => (
+                  <div
+                    key={index}
+                    className={`p-4 rounded-xl border-l-4 ${
+                      step.type === 'review' ? 'bg-blue-50 border-blue-500' :
+                      step.type === 'practice' ? 'bg-green-50 border-green-500' :
+                      'bg-yellow-50 border-yellow-500'
+                    }`}
+                  >
+                    <div className="flex items-start justify-between">
+                      <div>
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className="text-sm font-semibold text-gray-700">Step {index + 1}</span>
+                          <span className={`text-xs px-2 py-0.5 rounded-full ${
+                            step.type === 'review' ? 'bg-blue-200 text-blue-700' :
+                            step.type === 'practice' ? 'bg-green-200 text-green-700' :
+                            'bg-yellow-200 text-yellow-700'
+                          }`}>
+                            {step.type}
+                          </span>
+                        </div>
+                        <h5 className="font-medium text-gray-800">{step.title}</h5>
+                        <p className="text-sm text-gray-600 mt-1">{step.description}</p>
+                      </div>
+                      <div className="flex items-center gap-1 text-gray-500">
+                        <Clock className="w-4 h-4" />
+                        <span className="text-sm">{step.estimatedTime}m</span>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Achievements */}
+          <div className="bg-white rounded-2xl shadow-lg p-6">
+            <h3 className="font-semibold text-gray-800 text-lg mb-4 flex items-center gap-2">
+              <Award className="w-5 h-5 text-yellow-500" />
+              Achievements
+            </h3>
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+              {achievements.map(achievement => (
+                <div
+                  key={achievement.id}
+                  className={`p-4 rounded-xl border-2 text-center transition-all ${
+                    achievement.unlocked 
+                      ? 'border-yellow-400 bg-yellow-50' 
+                      : 'border-gray-200 bg-gray-50 opacity-50'
+                  }`}
+                >
+                  <div className="text-3xl mb-2">{achievement.icon}</div>
+                  <p className="font-medium text-gray-800 text-sm">{achievement.title}</p>
+                  <p className="text-xs text-gray-500">{achievement.desc}</p>
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
       )}
     </div>

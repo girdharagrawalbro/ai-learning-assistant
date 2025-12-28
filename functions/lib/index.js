@@ -33,7 +33,7 @@ exports.chatWithStudyBuddy = functions.https.onRequest((req, res) => {
                 return;
             }
             const genAI = getGeminiClient();
-            const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+            const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
             const systemPrompt = `You are an AI Study Buddy - a friendly, knowledgeable, and encouraging educational assistant. Your role is to help students understand complex concepts by breaking them down into simpler parts.
 
 Guidelines:
@@ -78,7 +78,7 @@ exports.generateQuiz = functions.https.onRequest((req, res) => {
                 return;
             }
             const genAI = getGeminiClient();
-            const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+            const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
             const prompt = `You are an expert quiz generator. Based on the following study content, generate ${numQuestions} multiple-choice questions at ${difficulty} difficulty level.
 
 Study Content:
@@ -133,7 +133,7 @@ exports.getStudyRecommendations = functions.https.onRequest((req, res) => {
                 return;
             }
             const genAI = getGeminiClient();
-            const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+            const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
             const prompt = `You are a personalized learning advisor. Based on the student's learning progress, generate study recommendations.
 
 Current Progress:
@@ -175,7 +175,7 @@ exports.extractConcepts = functions.https.onRequest((req, res) => {
                 return;
             }
             const genAI = getGeminiClient();
-            const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+            const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
             const prompt = `Analyze the following study material and extract key concepts.
 
 Study Material:
@@ -208,7 +208,7 @@ exports.summarizeContent = functions.https.onRequest((req, res) => {
             }
             const wordCounts = { short: 100, medium: 250, long: 500 };
             const genAI = getGeminiClient();
-            const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+            const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
             const prompt = `Summarize the following study material in approximately ${wordCounts[length] || 250} words.
 
 Study Material:

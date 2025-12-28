@@ -9,7 +9,7 @@ An interactive educational web application that leverages Google's Gemini AI to 
 ## 🌟 Features
 
 ### 🤖 AI Study Buddy Chatbot
-- Powered by Google Gemini AI (gemini-1.5-flash model)
+- Powered by Google Gemini AI (gemini-2.5-flash model)
 - Context-aware responses using your uploaded study materials
 - Markdown-formatted explanations with code highlighting
 - Chat history preservation for continued conversations
@@ -58,7 +58,7 @@ An interactive educational web application that leverages Google's Gemini AI to 
 - **Firebase Hosting** - Web app deployment
 
 ### AI/ML
-- **Google Gemini API** (gemini-1.5-flash) - AI chat and content generation
+- **Google Gemini API** (gemini-2.5-flash) - AI chat and content generation
 
 ## 🚀 Getting Started
 

@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { useDropzone } from 'react-dropzone';
 import { 
   Upload, 
@@ -14,18 +14,38 @@ import {
   ChevronLeft,
   RotateCcw,
   Trophy,
-  XCircle
+  XCircle,
+  BookOpen,
+  Calendar
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
-import { generateQuizFromContent, extractKeyConcepts } from '../services/geminiService';
-import { saveQuiz } from '../services/firebaseService';
-import { Quiz } from '../types';
+import { generateQuizFromContent, extractKeyConcepts, extractTopicsFromContent, generateContentSummary } from '../services/geminiService';
+import { 
+  saveQuiz, 
+  deleteQuiz, 
+  saveQuizAttempt, 
+  getQuizAttempts, 
+  updateTopicPerformance,
+  saveStoredContent,
+  getStoredContents,
+  createRevisionSchedulesForContent
+} from '../services/firebaseService';
+import { Quiz, QuizAttempt, StoredContent } from '../types';
+import * as pdfjsLib from 'pdfjs-dist';
+import mammoth from 'mammoth';
+
+// Set up PDF.js worker for v5
+pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
+  'pdfjs-dist/build/pdf.worker.min.mjs',
+  import.meta.url
+).toString();
 
 interface UploadedFile {
   file: File;
   content: string;
-  status: 'pending' | 'processing' | 'ready' | 'error';
+  status: 'pending' | 'processing' | 'ready' | 'error' | 'saving';
   concepts?: string[];
+  storedContentId?: string; // Reference to saved content in Firestore
 }
 
 const QuizGenerator: React.FC = () => {
@@ -43,7 +63,29 @@ const QuizGenerator: React.FC = () => {
   const [selectedAnswers, setSelectedAnswers] = useState<(number | null)[]>([]);
   const [showResults, setShowResults] = useState(false);
   const [quizStarted, setQuizStarted] = useState(false);
-  const [activeView, setActiveView] = useState<'generate' | 'history'>('generate');
+  const [activeView, setActiveView] = useState<'generate' | 'history' | 'attempts' | 'materials'>('generate');
+  const [quizAttempts, setQuizAttempts] = useState<QuizAttempt[]>([]);
+  const [quizStartTime, setQuizStartTime] = useState<number>(0);
+  const [isSavingAttempt, setIsSavingAttempt] = useState(false);
+  const [lastAttemptSaved, setLastAttemptSaved] = useState(false);
+  const [storedContents, setStoredContents] = useState<StoredContent[]>([]);
+
+  // Load stored contents on mount
+  useEffect(() => {
+    if (user) {
+      loadStoredContents();
+    }
+  }, [user]);
+
+  const loadStoredContents = async () => {
+    if (!user) return;
+    try {
+      const contents = await getStoredContents(user.id);
+      setStoredContents(contents);
+    } catch (error) {
+      console.error('Error loading stored contents:', error);
+    }
+  };
 
   const handleSelectQuizFromHistory = (quiz: Quiz) => {
     setGeneratedQuiz(quiz);
@@ -51,9 +93,62 @@ const QuizGenerator: React.FC = () => {
     setCurrentQuestionIndex(0);
     setShowResults(false);
     setQuizStarted(true);
+    setQuizStartTime(Date.now());
+    setLastAttemptSaved(false);
+  };
+
+  // Load quiz attempts on mount
+  React.useEffect(() => {
+    if (user) {
+      loadQuizAttempts();
+    }
+  }, [user]);
+
+  const loadQuizAttempts = async () => {
+    if (!user) return;
+    try {
+      const attempts = await getQuizAttempts(user.id);
+      setQuizAttempts(attempts);
+    } catch (error) {
+      console.error('Error loading quiz attempts:', error);
+    }
+  };
+
+  const [deletingQuizId, setDeletingQuizId] = useState<string | null>(null);
+
+  const handleDeleteQuiz = async (e: React.MouseEvent, quizId: string) => {
+    e.stopPropagation(); // Prevent triggering quiz selection
+    
+    if (!quizId) {
+      console.error('No quiz ID provided for deletion');
+      return;
+    }
+    
+    // Confirm deletion
+    if (!window.confirm('Are you sure you want to delete this quiz?')) {
+      return;
+    }
+    
+    setDeletingQuizId(quizId);
+    try {
+      await deleteQuiz(quizId);
+      setQuizzes(prev => prev.filter(q => q.id !== quizId));
+      // If the deleted quiz was currently being viewed, clear it
+      if (generatedQuiz?.id === quizId) {
+        setGeneratedQuiz(null);
+        setQuizStarted(false);
+      }
+    } catch (error) {
+      console.error('Error deleting quiz:', error);
+      alert('Failed to delete quiz. Please try again.');
+    } finally {
+      setDeletingQuizId(null);
+    }
   };
 
   const onDrop = useCallback(async (acceptedFiles: File[]) => {
+    if (!user) return;
+    
     for (const file of acceptedFiles) {
       const newFile: UploadedFile = {
         file,
@@ -67,6 +162,7 @@ const QuizGenerator: React.FC = () => {
         const content = await readFileContent(file);
         const concepts = await extractKeyConcepts(content);
         
+        // Update status to ready first
         setUploadedFiles(prev => 
           prev.map(f => 
             f.file === file 
@@ -74,6 +170,39 @@ const QuizGenerator: React.FC = () => {
               : f
           )
         );
+        
+        // Extract topics and save content in background
+        const extension = file.name.split('.').pop()?.toLowerCase() as 'pdf' | 'doc' | 'docx' | 'txt';
+        const topics = await extractTopicsFromContent(content, file.name);
+        const summary = await generateContentSummary(content);
+        
+        // Save to Firestore
+        const storedContentId = await saveStoredContent({
+          userId: user.id,
+          title: file.name.replace(/\.[^/.]+$/, ''),
+          fileName: file.name,
+          content: content,
+          summary: summary,
+          topics: topics,
+          createdAt: new Date(),
+          fileType: extension || 'txt'
+        });
+        
+        // Create revision schedules for the topics
+        await createRevisionSchedulesForContent(user.id, storedContentId, topics);
+        
+        // Update file with stored content ID
+        setUploadedFiles(prev => 
+          prev.map(f => 
+            f.file === file 
+              ? { ...f, storedContentId }
+              : f
+          )
+        );
+        
+        // Refresh stored contents list
+        loadStoredContents();
+        
       } catch (error) {
         setUploadedFiles(prev => 
           prev.map(f => 
@@ -98,6 +227,34 @@ const QuizGenerator: React.FC = () => {
   });
 
   const readFileContent = async (file: File): Promise<string> => {
+    const extension = file.name.split('.').pop()?.toLowerCase();
+    
+    // Handle PDF files
+    if (extension === 'pdf') {
+      const arrayBuffer = await file.arrayBuffer();
+      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+      let fullText = '';
+      
+      for (let i = 1; i <= pdf.numPages; i++) {
+        const page = await pdf.getPage(i);
+        const textContent = await page.getTextContent();
+        const pageText = textContent.items
+          .map((item: any) => item.str)
+          .join(' ');
+        fullText += pageText + '\n';
+      }
+      
+      return fullText.trim();
+    }
+    
+    // Handle DOC/DOCX files
+    if (extension === 'doc' || extension === 'docx') {
+      const arrayBuffer = await file.arrayBuffer();
+      const result = await mammoth.extractRawText({ arrayBuffer });
+      return result.value;
+    }
+    
+    // Handle text files (.txt, .md)
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = (e) => {
@@ -121,8 +278,7 @@ const QuizGenerator: React.FC = () => {
         quizSettings.subject
       );
 
-      const quiz: Quiz = {
-        id: '',
+      const quizData: Omit<Quiz, 'id'> = {
         userId: user.id,
         title: `Quiz: ${selectedFile.file.name}`,
         subject: quizSettings.subject || 'General',
@@ -132,11 +288,11 @@ const QuizGenerator: React.FC = () => {
         difficulty: quizSettings.difficulty
       };
 
-      const quizId = await saveQuiz(quiz);
-      quiz.id = quizId;
+      const quizId = await saveQuiz(quizData as Quiz);
+      const savedQuiz: Quiz = { ...quizData, id: quizId };
 
-      setGeneratedQuiz(quiz);
-      setQuizzes(prev => [quiz, ...prev]);
+      setGeneratedQuiz(savedQuiz);
+      setQuizzes(prev => [savedQuiz, ...prev]);
       setSelectedAnswers(new Array(questions.length).fill(null));
     } catch (error) {
       console.error('Error generating quiz:', error);
@@ -174,8 +330,71 @@ const QuizGenerator: React.FC = () => {
     }
   };
 
-  const handleSubmitQuiz = () => {
+  const handleSubmitQuiz = async () => {
     setShowResults(true);
+    
+    // Save quiz attempt to database
+    if (generatedQuiz && user && !lastAttemptSaved) {
+      setIsSavingAttempt(true);
+      try {
+        const timeSpent = Math.round((Date.now() - quizStartTime) / 1000); // in seconds
+        const score = calculateScoreValue();
+        
+        // Analyze topic performance
+        const topicStats: Record<string, { correct: number; total: number }> = {};
+        generatedQuiz.questions.forEach((q, i) => {
+          if (!topicStats[q.topic]) {
+            topicStats[q.topic] = { correct: 0, total: 0 };
+          }
+          topicStats[q.topic].total++;
+          if (selectedAnswers[i] === q.correctAnswer) {
+            topicStats[q.topic].correct++;
+          }
+        });
+        
+        const topicResults = Object.entries(topicStats).map(([topic, stats]) => ({
+          topic,
+          correct: stats.correct,
+          total: stats.total
+        }));
+        
+        const attempt: Omit<QuizAttempt, 'id'> = {
+          quizId: generatedQuiz.id,
+          userId: user.id,
+          answers: selectedAnswers.map(a => a ?? -1),
+          score,
+          totalQuestions: generatedQuiz.questions.length,
+          completedAt: new Date(),
+          timeSpent
+        };
+        
+        await saveQuizAttempt(attempt);
+        
+        // Update topic performance for weak/strong topic tracking
+        await updateTopicPerformance(user.id, topicResults);
+        
+        setQuizAttempts(prev => [{...attempt, id: 'temp-' + Date.now()} as QuizAttempt, ...prev]);
+        setLastAttemptSaved(true);
+        
+        // Reload attempts to get the actual ID
+        loadQuizAttempts();
+      } catch (error) {
+        console.error('Error saving quiz attempt:', error);
+      } finally {
+        setIsSavingAttempt(false);
+      }
+    }
+  };
+
+  const calculateScoreValue = (): number => {
+    if (!generatedQuiz) return 0;
+    let correct = 0;
+    generatedQuiz.questions.forEach((q, i) => {
+      if (selectedAnswers[i] === q.correctAnswer) {
+        correct++;
+      }
+    });
+    return correct;
   };
 
   const calculateScore = (): number => {
@@ -227,6 +446,12 @@ const QuizGenerator: React.FC = () => {
               </span>
               <span className="text-gray-500">accuracy</span>
             </div>
+            {isSavingAttempt && (
+              <p className="text-sm text-gray-500 mt-2">Saving your attempt...</p>
+            )}
+            {lastAttemptSaved && !isSavingAttempt && (
+              <p className="text-sm text-green-600 mt-2">✓ Progress saved</p>
+            )}
           </div>
 
           <div className="space-y-3 max-h-80 overflow-y-auto mb-6">
@@ -392,7 +617,11 @@ const QuizGenerator: React.FC = () => {
             Cancel
           </button>
           <button
-            onClick={() => setQuizStarted(true)}
+            onClick={() => {
+              setQuizStarted(true);
+              setQuizStartTime(Date.now());
+              setLastAttemptSaved(false);
+            }}
             className="flex-1 py-3 bg-green-600 hover:bg-green-700 text-white rounded-xl font-medium transition-colors flex items-center justify-center gap-2"
           >
             <Play className="w-4 h-4" />
@@ -446,6 +675,29 @@ const QuizGenerator: React.FC = () => {
             }`}
           >
             Quiz History ({quizzes.length})
+          </button>
+          <button
+            onClick={() => setActiveView('attempts')}
+            className={`flex-1 py-3 text-sm font-medium transition-colors ${
+              activeView === 'attempts'
+                ? 'text-blue-600 border-b-2 border-blue-600'
+                : 'text-gray-500 hover:text-gray-700'
+            }`}
+          >
+            My Attempts ({quizAttempts.length})
+          </button>
+          <button
+            onClick={() => setActiveView('materials')}
+            className={`flex-1 py-3 text-sm font-medium transition-colors ${
+              activeView === 'materials'
+                ? 'text-blue-600 border-b-2 border-blue-600'
+                : 'text-gray-500 hover:text-gray-700'
+            }`}
+          >
+            <span className="flex items-center justify-center gap-1">
+              <BookOpen className="w-4 h-4" />
+              Materials ({storedContents.length})
+            </span>
           </button>
         </div>
       </div>
@@ -601,38 +853,78 @@ const QuizGenerator: React.FC = () => {
             )}
           </div>
         </div>
-      ) : (
+      ) : activeView === 'history' ? (
         /* Quiz History */
         <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
           <p className="text-sm text-gray-500 mb-4">Click on a quiz to take it again</p>
-          {quizzes.length > 0 ? (
+          {quizzes.filter(q => q.id).length > 0 ? (
             <div className="space-y-3">
-              {quizzes.map((quiz, index) => (
-                <div 
-                  key={quiz.id || index} 
-                  onClick={() => handleSelectQuizFromHistory(quiz)}
-                  className="flex items-center justify-between p-4 bg-gray-50 rounded-xl hover:bg-blue-50 hover:border-blue-200 border border-transparent transition-colors cursor-pointer"
-                >
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 bg-blue-100 rounded-xl flex items-center justify-center">
-                      <ClipboardList className="w-5 h-5 text-blue-600" />
+              {quizzes.filter(q => q.id).map((quiz, index) => {
+                // Find attempts for this quiz
+                const quizAttemptsList = quizAttempts.filter(a => a.quizId === quiz.id);
+                const bestAttempt = quizAttemptsList.length > 0 
+                  ? quizAttemptsList.reduce((best, curr) => 
+                      (curr.score / curr.totalQuestions) > (best.score / best.totalQuestions) ? curr : best
+                    )
+                  : null;
+                
+                return (
+                  <div 
+                    key={quiz.id || index} 
+                    onClick={() => handleSelectQuizFromHistory(quiz)}
+                    className="flex items-center justify-between p-4 bg-gray-50 rounded-xl hover:bg-blue-50 hover:border-blue-200 border border-transparent transition-colors cursor-pointer"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 bg-blue-100 rounded-xl flex items-center justify-center">
+                        <ClipboardList className="w-5 h-5 text-blue-600" />
+                      </div>
+                      <div>
+                        <p className="font-medium text-gray-800 text-sm">{quiz.title}</p>
+                        <p className="text-xs text-gray-500">
+                          {quiz.questions.length} questions · {quiz.difficulty}
+                          {quizAttemptsList.length > 0 && (
+                            <span className="ml-2 text-green-600">
+                              · {quizAttemptsList.length} attempt{quizAttemptsList.length !== 1 ? 's' : ''}
+                            </span>
+                          )}
+                        </p>
+                      </div>
                     </div>
-                    <div>
-                      <p className="font-medium text-gray-800 text-sm">{quiz.title}</p>
-                      <p className="text-xs text-gray-500">{quiz.questions.length} questions · {quiz.difficulty}</p>
+                    <div className="flex items-center gap-2">
+                      {bestAttempt && (
+                        <span className={`px-2 py-1 rounded-lg text-xs font-medium ${
+                          (bestAttempt.score / bestAttempt.totalQuestions) >= 0.7 
+                            ? 'bg-green-100 text-green-700' 
+                            : (bestAttempt.score / bestAttempt.totalQuestions) >= 0.5 
+                              ? 'bg-yellow-100 text-yellow-700' 
+                              : 'bg-red-100 text-red-700'
+                        }`}>
+                          Best: {Math.round((bestAttempt.score / bestAttempt.totalQuestions) * 100)}%
+                        </span>
+                      )}
+                      <span className="px-2 py-1 bg-blue-100 text-blue-700 rounded-lg text-xs font-medium">
+                        {quiz.subject}
+                      </span>
+                      <button className="px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white rounded-lg text-xs font-medium transition-colors flex items-center gap-1">
+                        <Play className="w-3 h-3" />
+                        Take Quiz
+                      </button>
+                      <button 
+                        onClick={(e) => handleDeleteQuiz(e, quiz.id)}
+                        disabled={deletingQuizId === quiz.id}
+                        className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors disabled:opacity-50"
+                        title="Delete quiz"
+                      >
+                        {deletingQuizId === quiz.id ? (
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                        ) : (
+                          <Trash2 className="w-4 h-4" />
+                        )}
+                      </button>
                     </div>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <span className="px-2 py-1 bg-blue-100 text-blue-700 rounded-lg text-xs font-medium">
-                      {quiz.subject}
-                    </span>
-                    <button className="px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white rounded-lg text-xs font-medium transition-colors flex items-center gap-1">
-                      <Play className="w-3 h-3" />
-                      Take Quiz
-                    </button>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           ) : (
             <div className="text-center py-12">
@@ -649,7 +941,223 @@ const QuizGenerator: React.FC = () => {
             </div>
           )}
         </div>
-      )}
+      ) : activeView === 'attempts' ? (
+        /* Quiz Attempts History */
+        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
+          <p className="text-sm text-gray-500 mb-4">Your quiz attempt history with scores and weak topics</p>
+          {quizAttempts.length > 0 ? (
+            <div className="space-y-3">
+              {quizAttempts.map((attempt, index) => {
+                const quiz = quizzes.find(q => q.id === attempt.quizId);
+                const percentage = Math.round((attempt.score / attempt.totalQuestions) * 100);
+                const timeSpentMin = Math.floor(attempt.timeSpent / 60);
+                const timeSpentSec = attempt.timeSpent % 60;
+                
+                // Calculate wrong topics
+                const wrongTopics: string[] = [];
+                if (quiz) {
+                  quiz.questions.forEach((q, i) => {
+                    if (attempt.answers[i] !== q.correctAnswer) {
+                      if (!wrongTopics.includes(q.topic)) {
+                        wrongTopics.push(q.topic);
+                      }
+                    }
+                  });
+                }
+                
+                return (
+                  <div 
+                    key={attempt.id || index} 
+                    className="p-4 bg-gray-50 rounded-xl border border-transparent"
+                  >
+                    <div className="flex items-center justify-between mb-3">
+                      <div className="flex items-center gap-3">
+                        <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${
+                          percentage >= 70 ? 'bg-green-100' : percentage >= 50 ? 'bg-yellow-100' : 'bg-red-100'
+                        }`}>
+                          <Trophy className={`w-5 h-5 ${
+                            percentage >= 70 ? 'text-green-600' : percentage >= 50 ? 'text-yellow-600' : 'text-red-600'
+                          }`} />
+                        </div>
+                        <div>
+                          <p className="font-medium text-gray-800 text-sm">
+                            {quiz?.title || 'Quiz'}
+                          </p>
+                          <p className="text-xs text-gray-500">
+                            {new Date(attempt.completedAt).toLocaleDateString()} · {timeSpentMin}m {timeSpentSec}s
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className={`px-3 py-1.5 rounded-lg text-sm font-bold ${
+                          percentage >= 70 ? 'bg-green-100 text-green-700' : 
+                          percentage >= 50 ? 'bg-yellow-100 text-yellow-700' : 'bg-red-100 text-red-700'
+                        }`}>
+                          {attempt.score}/{attempt.totalQuestions} ({percentage}%)
+                        </span>
+                      </div>
+                    </div>
+                    
+                    {wrongTopics.length > 0 && (
+                      <div className="mt-2 pt-2 border-t border-gray-200">
+                        <p className="text-xs text-gray-500 mb-1">Weak Topics (needs practice):</p>
+                        <div className="flex flex-wrap gap-1">
+                          {wrongTopics.map((topic, i) => (
+                            <span key={i} className="px-2 py-0.5 bg-red-50 text-red-600 rounded text-xs">
+                              {topic}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="text-center py-12">
+              <div className="w-16 h-16 bg-gray-100 rounded-2xl flex items-center justify-center mx-auto mb-4">
+                <Trophy className="w-8 h-8 text-gray-400" />
+              </div>
+              <p className="text-gray-500 text-sm">No quiz attempts yet</p>
+              <p className="text-xs text-gray-400 mt-1">Complete a quiz to see your results here</p>
+            </div>
+          )}
+        </div>
+      ) : activeView === 'materials' ? (
+        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
+          <div className="flex items-center justify-between mb-6">
+            <h3 className="font-semibold text-gray-800 flex items-center gap-2">
+              <BookOpen className="w-5 h-5 text-blue-600" />
+              Saved Study Materials
+            </h3>
+            <div className="flex items-center gap-2 text-sm text-gray-500">
+              <Calendar className="w-4 h-4" />
+              Topics scheduled for revision
+            </div>
+          </div>
+          
+          {storedContents.length > 0 ? (
+            <div className="space-y-4">
+              {storedContents.map((content) => (
+                <div 
+                  key={content.id}
+                  className="p-4 bg-gray-50 rounded-xl border border-gray-200 hover:border-blue-300 transition-colors"
+                >
+                  <div className="flex items-start justify-between mb-3">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 bg-blue-100 rounded-xl flex items-center justify-center">
+                        <FileText className="w-5 h-5 text-blue-600" />
+                      </div>
+                      <div>
+                        <h4 className="font-medium text-gray-800">{content.title}</h4>
+                        <p className="text-xs text-gray-500">
+                          {content.fileName} · Uploaded {new Date(content.createdAt).toLocaleDateString()}
+                        </p>
+                      </div>
+                    </div>
+                    <span className={`px-2 py-1 rounded-lg text-xs font-medium ${
+                      content.fileType === 'pdf' ? 'bg-red-100 text-red-700' :
+                      content.fileType === 'docx' || content.fileType === 'doc' ? 'bg-blue-100 text-blue-700' :
+                      'bg-gray-100 text-gray-700'
+                    }`}>
+                      {content.fileType.toUpperCase()}
+                    </span>
+                  </div>
+                  
+                  {content.summary && (
+                    <p className="text-sm text-gray-600 mb-3 line-clamp-2">
+                      {content.summary}
+                    </p>
+                  )}
+                  
+                  {content.topics.length > 0 && (
+                    <div className="mb-3">
+                      <p className="text-xs font-medium text-gray-500 mb-2">
+                        Topics for Revision ({content.topics.length}):
+                      </p>
+                      <div className="flex flex-wrap gap-2">
+                        {content.topics.slice(0, 6).map((topic) => (
+                          <span 
+                            key={topic.id}
+                            className={`px-2 py-1 rounded-lg text-xs font-medium ${
+                              topic.masteryLevel >= 70 ? 'bg-green-100 text-green-700' :
+                              topic.masteryLevel >= 40 ? 'bg-yellow-100 text-yellow-700' :
+                              'bg-purple-100 text-purple-700'
+                            }`}
+                          >
+                            {topic.name}
+                            {topic.masteryLevel > 0 && (
+                              <span className="ml-1 opacity-75">({topic.masteryLevel}%)</span>
+                            )}
+                          </span>
+                        ))}
+                        {content.topics.length > 6 && (
+                          <span className="px-2 py-1 bg-gray-100 text-gray-600 rounded-lg text-xs">
+                            +{content.topics.length - 6} more
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                  
+                  <div className="flex items-center gap-2 pt-2 border-t border-gray-200">
+                    <button
+                      onClick={() => {
+                        // Create an uploaded file from stored content for quiz generation
+                        const file = new File([content.content], content.fileName, { type: 'text/plain' });
+                        setUploadedFiles([{
+                          file,
+                          content: content.content,
+                          status: 'ready',
+                          concepts: content.topics.map(t => t.name),
+                          storedContentId: content.id
+                        }]);
+                        setSelectedFile({
+                          file,
+                          content: content.content,
+                          status: 'ready',
+                          concepts: content.topics.map(t => t.name),
+                          storedContentId: content.id
+                        });
+                        setActiveView('generate');
+                      }}
+                      className="flex-1 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-1"
+                    >
+                      <Sparkles className="w-4 h-4" />
+                      Generate Quiz
+                    </button>
+                    <button
+                      onClick={() => {
+                        // Navigate to revision mode with this content
+                        // This would be handled by RevisionMode component
+                      }}
+                      className="flex-1 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-1"
+                    >
+                      <Calendar className="w-4 h-4" />
+                      Start Revision
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="text-center py-12">
+              <div className="w-16 h-16 bg-gray-100 rounded-2xl flex items-center justify-center mx-auto mb-4">
+                <BookOpen className="w-8 h-8 text-gray-400" />
+              </div>
+              <p className="text-gray-500 text-sm">No saved materials yet</p>
+              <p className="text-xs text-gray-400 mt-1">Upload a PDF or document to save it for revision</p>
+              <button
+                onClick={() => setActiveView('generate')}
+                className="mt-4 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors"
+              >
+                Upload Study Material
+              </button>
+            </div>
+          )}
+        </div>
+      ) : null}
     </div>
   );
 };

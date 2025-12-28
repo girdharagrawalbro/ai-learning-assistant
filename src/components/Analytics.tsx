@@ -11,7 +11,11 @@ import {
   ArrowUpRight,
   ArrowDownRight,
   Loader2,
-  AlertCircle
+  AlertCircle,
+  AlertTriangle,
+  TrendingUp,
+  Calendar,
+  Zap
 } from 'lucide-react';
 import {
   XAxis,
@@ -23,10 +27,12 @@ import {
   Pie,
   Cell,
   BarChart,
-  Bar
+  Bar,
+  LineChart,
+  Line
 } from 'recharts';
 import { useApp } from '../context/AppContext';
-import { getQuizAttempts, getQuizzes } from '../services/firebaseService';
+import { getQuizAttempts, getQuizzes, getLearningProgress } from '../services/firebaseService';
 import { QuizAttempt, Quiz } from '../types';
 import { generateStudyRecommendations } from '../services/geminiService';
 
@@ -38,11 +44,12 @@ interface TopicPerformance {
 }
 
 const Analytics: React.FC = () => {
-  const { user, learningProgress, quizzes: contextQuizzes } = useApp();
+  const { user, learningProgress, quizzes: contextQuizzes, setLearningProgress, navigateToChatWithMessage } = useApp();
   const [quizHistory, setQuizHistory] = useState<QuizAttempt[]>([]);
   const [allQuizzes, setAllQuizzes] = useState<Quiz[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [recommendations, setRecommendations] = useState<{ topic: string; action: string; icon: typeof BookOpen }[]>([]);
+  const [activeTab, setActiveTab] = useState<'overview' | 'weakpoints' | 'reports'>('overview');
 
   useEffect(() => {
     if (user) {
@@ -54,19 +61,25 @@ const Analytics: React.FC = () => {
     if (!user) return;
     setIsLoading(true);
     try {
-      const [attempts, quizzes] = await Promise.all([
+      const [attempts, quizzes, progress] = await Promise.all([
         getQuizAttempts(user.id),
-        getQuizzes(user.id)
+        getQuizzes(user.id),
+        getLearningProgress(user.id)
       ]);
       setQuizHistory(attempts);
       setAllQuizzes(quizzes.length > 0 ? quizzes : contextQuizzes);
+      
+      if (progress) {
+        setLearningProgress(progress);
+      }
 
       // Generate AI recommendations if we have progress data
-      if (learningProgress && learningProgress.topics.length > 0) {
+      const progressData = progress || learningProgress;
+      if (progressData && progressData.topics.length > 0) {
         const recs = await generateStudyRecommendations(
-          learningProgress.topics,
-          learningProgress.weakTopics,
-          learningProgress.topics.slice(0, 5).map(t => t.topic)
+          progressData.topics,
+          progressData.weakTopics,
+          progressData.topics.slice(0, 5).map(t => t.topic)
         );
         setRecommendations(recs.slice(0, 3).map(r => ({
           topic: r.topic,
@@ -186,18 +199,107 @@ const Analytics: React.FC = () => {
     if (learningProgress?.topics && learningProgress.topics.length > 0) {
       return learningProgress.topics.slice(0, 5).map(t => ({
         name: t.topic.length > 20 ? t.topic.substring(0, 20) + '...' : t.topic,
+        fullName: t.topic,
         progress: t.masteryLevel,
-        trend: t.masteryLevel >= 50 ? 'up' : 'down' as 'up' | 'down'
+        trend: t.masteryLevel >= 50 ? 'up' : 'down' as 'up' | 'down',
+        quizzesTaken: t.quizzesTaken
       }));
     }
 
     // Fallback to topic performance if no learning progress
     return topicPerformance.slice(0, 3).map(t => ({
       name: t.name,
+      fullName: t.name,
       progress: t.percentage,
-      trend: t.percentage >= 50 ? 'up' : 'down' as 'up' | 'down'
+      trend: t.percentage >= 50 ? 'up' : 'down' as 'up' | 'down',
+      quizzesTaken: 0
     }));
   }, [learningProgress, topicPerformance]);
+
+  // Detailed weak topics analysis
+  const weakTopicsAnalysis = useMemo(() => {
+    if (!learningProgress?.topics) return [];
+    
+    return learningProgress.topics
+      .filter(t => t.masteryLevel < 60)
+      .sort((a, b) => a.masteryLevel - b.masteryLevel)
+      .map(t => ({
+        topic: t.topic,
+        mastery: t.masteryLevel,
+        quizzesTaken: t.quizzesTaken,
+        lastStudied: t.lastStudied,
+        improvement: t.quizzesTaken > 1 ? 'needs_practice' : 'new_topic'
+      }));
+  }, [learningProgress]);
+
+  // Strong topics
+  const strongTopicsAnalysis = useMemo(() => {
+    if (!learningProgress?.topics) return [];
+    
+    return learningProgress.topics
+      .filter(t => t.masteryLevel >= 70)
+      .sort((a, b) => b.masteryLevel - a.masteryLevel)
+      .slice(0, 5);
+  }, [learningProgress]);
+
+  // Daily performance data (last 7 days)
+  const dailyPerformance = useMemo(() => {
+    const days: { date: string; score: number; quizzes: number }[] = [];
+    const today = new Date();
+    
+    for (let i = 6; i >= 0; i--) {
+      const date = new Date(today);
+      date.setDate(today.getDate() - i);
+      const dateStr = date.toLocaleDateString('en-US', { weekday: 'short' });
+      
+      const dayAttempts = quizHistory.filter(a => {
+        const attemptDate = new Date(a.completedAt);
+        return attemptDate.toDateString() === date.toDateString();
+      });
+      
+      const avgScore = dayAttempts.length > 0
+        ? Math.round(dayAttempts.reduce((sum, a) => sum + (a.score / a.totalQuestions) * 100, 0) / dayAttempts.length)
+        : 0;
+      
+      days.push({
+        date: dateStr,
+        score: avgScore,
+        quizzes: dayAttempts.length
+      });
+    }
+    
+    return days;
+  }, [quizHistory]);
+
+  // Monthly performance data (last 30 days by week)
+  const monthlyPerformance = useMemo(() => {
+    const weeks: { week: string; score: number; quizzes: number }[] = [];
+    const today = new Date();
+    
+    for (let w = 3; w >= 0; w--) {
+      const weekStart = new Date(today);
+      weekStart.setDate(today.getDate() - (w * 7) - 6);
+      const weekEnd = new Date(today);
+      weekEnd.setDate(today.getDate() - (w * 7));
+      
+      const weekAttempts = quizHistory.filter(a => {
+        const attemptDate = new Date(a.completedAt);
+        return attemptDate >= weekStart && attemptDate <= weekEnd;
+      });
+      
+      const avgScore = weekAttempts.length > 0
+        ? Math.round(weekAttempts.reduce((sum, a) => sum + (a.score / a.totalQuestions) * 100, 0) / weekAttempts.length)
+        : 0;
+      
+      weeks.push({
+        week: `Week ${4 - w}`,
+        score: avgScore,
+        quizzes: weekAttempts.length
+      });
+    }
+    
+    return weeks;
+  }, [quizHistory]);
 
   // Suggested next steps from AI or fallback
   const suggestedNextSteps = useMemo(() => {
@@ -259,9 +361,46 @@ const Analytics: React.FC = () => {
             </div>
           </div>
         </div>
+        
+        {/* Tabs */}
+        <div className="flex border-b border-gray-100">
+          <button
+            onClick={() => setActiveTab('overview')}
+            className={`flex-1 py-3 text-sm font-medium transition-colors flex items-center justify-center gap-2 ${
+              activeTab === 'overview'
+                ? 'text-cyan-600 border-b-2 border-cyan-600'
+                : 'text-gray-500 hover:text-gray-700'
+            }`}
+          >
+            <BarChart3 className="w-4 h-4" />
+            Overview
+          </button>
+          <button
+            onClick={() => setActiveTab('weakpoints')}
+            className={`flex-1 py-3 text-sm font-medium transition-colors flex items-center justify-center gap-2 ${
+              activeTab === 'weakpoints'
+                ? 'text-cyan-600 border-b-2 border-cyan-600'
+                : 'text-gray-500 hover:text-gray-700'
+            }`}
+          >
+            <AlertTriangle className="w-4 h-4" />
+            Weak Points ({weakTopicsAnalysis.length})
+          </button>
+          <button
+            onClick={() => setActiveTab('reports')}
+            className={`flex-1 py-3 text-sm font-medium transition-colors flex items-center justify-center gap-2 ${
+              activeTab === 'reports'
+                ? 'text-cyan-600 border-b-2 border-cyan-600'
+                : 'text-gray-500 hover:text-gray-700'
+            }`}
+          >
+            <Calendar className="w-4 h-4" />
+            Reports
+          </button>
+        </div>
       </div>
 
-      {/* Stats Grid */}
+      {/* Stats Grid - Always visible */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
           <div className="flex items-center gap-3 mb-2">
@@ -312,6 +451,8 @@ const Analytics: React.FC = () => {
         </div>
       </div>
 
+      {/* Tab Content */}
+      {activeTab === 'overview' && (
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Left Column - Charts */}
         <div className="lg:col-span-2 space-y-6">
@@ -441,19 +582,24 @@ const Analytics: React.FC = () => {
           {/* Suggested Next Steps */}
           <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
             <h3 className="font-semibold text-gray-800 mb-4">Suggested Next Steps</h3>
+            <p className="text-xs text-gray-500 mb-3">Click any topic to learn more with AI</p>
             <div className="space-y-3">
               {suggestedNextSteps.map((step, index) => {
                 const IconComponent = step.icon;
                 return (
-                  <div key={index} className="flex items-center gap-3 p-3 bg-blue-50 rounded-xl hover:bg-blue-100 transition-colors cursor-pointer">
-                    <div className="w-8 h-8 bg-blue-100 rounded-lg flex items-center justify-center">
+                  <div 
+                    key={index} 
+                    onClick={() => navigateToChatWithMessage(`I want to learn about ${step.topic}. ${step.action}. Please explain this topic in detail with examples.`)}
+                    className="flex items-center gap-3 p-3 bg-blue-50 rounded-xl hover:bg-blue-100 transition-colors cursor-pointer group"
+                  >
+                    <div className="w-8 h-8 bg-blue-100 rounded-lg flex items-center justify-center group-hover:bg-blue-200 transition-colors">
                       <IconComponent className="w-4 h-4 text-blue-600" />
                     </div>
                     <div className="flex-1">
                       <p className="text-sm font-medium text-gray-800">{step.topic}</p>
                       <p className="text-xs text-gray-500">{step.action}</p>
                     </div>
-                    <ChevronRight className="w-4 h-4 text-gray-400" />
+                    <ChevronRight className="w-4 h-4 text-gray-400 group-hover:text-blue-600 group-hover:translate-x-1 transition-all" />
                   </div>
                 );
               })}
@@ -495,6 +641,270 @@ const Analytics: React.FC = () => {
           )}
         </div>
       </div>
+      )}
+
+      {/* Weak Points Tab */}
+      {activeTab === 'weakpoints' && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          {/* Weak Topics List */}
+          <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 bg-red-100 rounded-xl flex items-center justify-center">
+                <AlertTriangle className="w-5 h-5 text-red-600" />
+              </div>
+              <div>
+                <h3 className="font-semibold text-gray-800">Topics Needing Improvement</h3>
+                <p className="text-xs text-gray-500">Focus on these areas to improve your scores</p>
+              </div>
+            </div>
+            
+            {weakTopicsAnalysis.length > 0 ? (
+              <div className="space-y-3">
+                {weakTopicsAnalysis.map((topic, index) => (
+                  <div key={index} className="p-4 bg-red-50 rounded-xl border border-red-100">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="font-medium text-gray-800">{topic.topic}</span>
+                      <span className={`px-2 py-1 rounded-lg text-xs font-bold ${
+                        topic.mastery < 30 ? 'bg-red-200 text-red-700' : 
+                        topic.mastery < 50 ? 'bg-orange-200 text-orange-700' : 'bg-yellow-200 text-yellow-700'
+                      }`}>
+                        {topic.mastery}% mastery
+                      </span>
+                    </div>
+                    <div className="h-2 bg-red-100 rounded-full overflow-hidden mb-2">
+                      <div 
+                        className="h-full bg-red-500 rounded-full transition-all"
+                        style={{ width: `${topic.mastery}%` }}
+                      />
+                    </div>
+                    <div className="flex items-center justify-between text-xs text-gray-500">
+                      <span>{topic.quizzesTaken} quiz{topic.quizzesTaken !== 1 ? 'zes' : ''} taken</span>
+                      <span className="flex items-center gap-1">
+                        <Zap className="w-3 h-3 text-orange-500" />
+                        Needs practice
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="text-center py-8">
+                <div className="w-16 h-16 bg-green-100 rounded-2xl flex items-center justify-center mx-auto mb-4">
+                  <Award className="w-8 h-8 text-green-600" />
+                </div>
+                <p className="text-gray-600 font-medium">Great job!</p>
+                <p className="text-sm text-gray-500">No weak topics detected. Keep up the good work!</p>
+              </div>
+            )}
+          </div>
+
+          {/* Strong Topics */}
+          <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 bg-green-100 rounded-xl flex items-center justify-center">
+                <TrendingUp className="w-5 h-5 text-green-600" />
+              </div>
+              <div>
+                <h3 className="font-semibold text-gray-800">Your Strong Topics</h3>
+                <p className="text-xs text-gray-500">Topics you've mastered</p>
+              </div>
+            </div>
+            
+            {strongTopicsAnalysis.length > 0 ? (
+              <div className="space-y-3">
+                {strongTopicsAnalysis.map((topic, index) => (
+                  <div key={index} className="p-4 bg-green-50 rounded-xl border border-green-100">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="font-medium text-gray-800">{topic.topic}</span>
+                      <span className="px-2 py-1 bg-green-200 text-green-700 rounded-lg text-xs font-bold">
+                        {topic.masteryLevel}% mastery
+                      </span>
+                    </div>
+                    <div className="h-2 bg-green-100 rounded-full overflow-hidden">
+                      <div 
+                        className="h-full bg-green-500 rounded-full transition-all"
+                        style={{ width: `${topic.masteryLevel}%` }}
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="text-center py-8">
+                <div className="w-16 h-16 bg-gray-100 rounded-2xl flex items-center justify-center mx-auto mb-4">
+                  <Brain className="w-8 h-8 text-gray-400" />
+                </div>
+                <p className="text-gray-500 text-sm">Take more quizzes to identify your strong topics</p>
+              </div>
+            )}
+          </div>
+
+          {/* Improvement Suggestions */}
+          <div className="lg:col-span-2 bg-gradient-to-r from-purple-600 to-purple-700 rounded-2xl p-6 text-white">
+            <div className="flex items-center gap-3 mb-4">
+              <Brain className="w-8 h-8" />
+              <div>
+                <h3 className="font-semibold text-lg">AI Learning Recommendations</h3>
+                <p className="text-sm text-purple-200">Based on your weak areas • Click to learn with AI</p>
+              </div>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              {weakTopicsAnalysis.length > 0 ? (
+                weakTopicsAnalysis.slice(0, 3).map((topic, index) => (
+                  <div 
+                    key={index} 
+                    onClick={() => navigateToChatWithMessage(`I'm struggling with "${topic.topic}" and have ${topic.mastery}% mastery. Please help me understand this topic better with clear explanations, examples, and practice tips.`)}
+                    className="bg-white/10 rounded-xl p-4 backdrop-blur-sm hover:bg-white/20 cursor-pointer transition-colors group"
+                  >
+                    <div className="flex items-center justify-between mb-1">
+                      <p className="font-medium">{topic.topic}</p>
+                      <ChevronRight className="w-4 h-4 opacity-0 group-hover:opacity-100 transition-opacity" />
+                    </div>
+                    <p className="text-sm text-purple-200">
+                      {topic.mastery < 30 
+                        ? 'Start with basic concepts and take practice quizzes'
+                        : topic.mastery < 50 
+                          ? 'Review key concepts and attempt more quizzes'
+                          : 'Almost there! A few more practice sessions will help'}
+                    </p>
+                  </div>
+                ))
+              ) : (
+                <div className="col-span-3 text-center py-4">
+                  <p className="text-purple-200">Complete more quizzes to get personalized recommendations</p>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Reports Tab */}
+      {activeTab === 'reports' && (
+        <div className="space-y-6">
+          {/* Daily Performance */}
+          <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 bg-blue-100 rounded-xl flex items-center justify-center">
+                  <Calendar className="w-5 h-5 text-blue-600" />
+                </div>
+                <div>
+                  <h3 className="font-semibold text-gray-800">Daily Performance Report</h3>
+                  <p className="text-xs text-gray-500">Your scores over the last 7 days</p>
+                </div>
+              </div>
+            </div>
+            
+            {dailyPerformance.some(d => d.quizzes > 0) ? (
+              <ResponsiveContainer width="100%" height={250}>
+                <LineChart data={dailyPerformance}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                  <XAxis dataKey="date" tick={{ fontSize: 12 }} stroke="#9ca3af" />
+                  <YAxis domain={[0, 100]} tick={{ fontSize: 12 }} stroke="#9ca3af" />
+                  <Tooltip 
+                    contentStyle={{ 
+                      background: 'white', 
+                      border: '1px solid #e5e7eb', 
+                      borderRadius: '8px' 
+                    }}
+                    formatter={(value: number, name: string) => [
+                      name === 'score' ? `${value}%` : value,
+                      name === 'score' ? 'Avg Score' : 'Quizzes'
+                    ]}
+                  />
+                  <Line 
+                    type="monotone" 
+                    dataKey="score" 
+                    stroke="#3b82f6" 
+                    strokeWidth={3}
+                    dot={{ fill: '#3b82f6', strokeWidth: 2 }}
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="h-[250px] flex items-center justify-center text-gray-500">
+                <div className="text-center">
+                  <AlertCircle className="w-8 h-8 mx-auto mb-2 text-gray-400" />
+                  <p className="text-sm">No quiz data for the last 7 days</p>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Weekly/Monthly Performance */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
+              <h3 className="font-semibold text-gray-800 mb-4">Weekly Breakdown</h3>
+              <div className="space-y-4">
+                {monthlyPerformance.map((week, index) => (
+                  <div key={index} className="flex items-center gap-4">
+                    <span className="text-sm text-gray-500 w-16">{week.week}</span>
+                    <div className="flex-1 h-3 bg-gray-100 rounded-full overflow-hidden">
+                      <div 
+                        className={`h-full rounded-full transition-all ${
+                          week.score >= 70 ? 'bg-green-500' : 
+                          week.score >= 50 ? 'bg-yellow-500' : 
+                          week.score > 0 ? 'bg-red-500' : 'bg-gray-200'
+                        }`}
+                        style={{ width: `${week.score}%` }}
+                      />
+                    </div>
+                    <div className="text-right w-24">
+                      <span className="font-bold text-gray-800">{week.score}%</span>
+                      <span className="text-xs text-gray-500 ml-1">({week.quizzes} quiz{week.quizzes !== 1 ? 'zes' : ''})</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Monthly Summary */}
+            <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
+              <h3 className="font-semibold text-gray-800 mb-4">Monthly Summary</h3>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="bg-blue-50 rounded-xl p-4 text-center">
+                  <p className="text-3xl font-bold text-blue-600">
+                    {monthlyPerformance.reduce((sum, w) => sum + w.quizzes, 0)}
+                  </p>
+                  <p className="text-xs text-gray-500">Quizzes This Month</p>
+                </div>
+                <div className="bg-green-50 rounded-xl p-4 text-center">
+                  <p className="text-3xl font-bold text-green-600">
+                    {monthlyPerformance.filter(w => w.quizzes > 0).length > 0 
+                      ? Math.round(monthlyPerformance.filter(w => w.quizzes > 0).reduce((sum, w) => sum + w.score, 0) / monthlyPerformance.filter(w => w.quizzes > 0).length)
+                      : 0}%
+                  </p>
+                  <p className="text-xs text-gray-500">Avg Monthly Score</p>
+                </div>
+                <div className="bg-purple-50 rounded-xl p-4 text-center">
+                  <p className="text-3xl font-bold text-purple-600">
+                    {strongTopicsAnalysis.length}
+                  </p>
+                  <p className="text-xs text-gray-500">Topics Mastered</p>
+                </div>
+                <div className="bg-orange-50 rounded-xl p-4 text-center">
+                  <p className="text-3xl font-bold text-orange-600">
+                    {weakTopicsAnalysis.length}
+                  </p>
+                  <p className="text-xs text-gray-500">Topics to Improve</p>
+                </div>
+              </div>
+              
+              {/* Study Time This Month */}
+              <div className="mt-4 p-4 bg-gray-50 rounded-xl">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Clock className="w-5 h-5 text-gray-500" />
+                    <span className="text-sm text-gray-600">Total Study Time</span>
+                  </div>
+                  <span className="font-bold text-gray-800">{stats.studyTime}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

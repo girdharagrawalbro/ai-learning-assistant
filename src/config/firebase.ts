@@ -13,6 +13,6 @@ export const firebaseConfig = {
 export const geminiConfig = {
   apiKey: import.meta.env.VITE_GEMINI_API_KEY || "your-gemini-api-key",
   // Use gemini-1.5-pro for paid tier with higher limits
-  // Or gemini-1.5-flash for free tier (60 requests/minute)
-  model: "gemini-2.5-flash-lite"
+  // Or gemini-2.5-flash for free tier (60 requests/minute)
+  model: "gemini-2.5-flash"
 };

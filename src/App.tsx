@@ -7,7 +7,7 @@ import StudyBuddyChat from './components/StudyBuddyChat';
 import QuizGenerator from './components/QuizGenerator';
 import RevisionMode from './components/RevisionMode';
 import Analytics from './components/Analytics';
-import { getStudyMaterials, getQuizzes, getLearningProgress } from './services/firebaseService';
+import { getStudyMaterials, getQuizzes, getLearningProgress, getChatSessions } from './services/firebaseService';
 import { Loader2, Bot } from 'lucide-react';
 
 const MainApp: React.FC = () => {
@@ -17,7 +17,8 @@ const MainApp: React.FC = () => {
     setActiveTab,
     setStudyMaterials,
     setQuizzes,
-    setLearningProgress
+    setLearningProgress,
+    setChatSessions
   } = useApp();
 
   useEffect(() => {
@@ -30,14 +31,16 @@ const MainApp: React.FC = () => {
     if (!user) return;
     
     try {
-      const [materials, quizzes, progress] = await Promise.all([
+      const [materials, quizzes, progress, chatSessionsData] = await Promise.all([
         getStudyMaterials(user.id),
         getQuizzes(user.id),
-        getLearningProgress(user.id)
+        getLearningProgress(user.id),
+        getChatSessions(user.id)
       ]);
 
       setStudyMaterials(materials);
       setQuizzes(quizzes);
+      setChatSessions(chatSessionsData);
       if (progress) {
         setLearningProgress(progress);
       }

@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useRef, useEffect, useState } from 'react';
 import {
   Send,
   Bot,
@@ -13,15 +13,18 @@ import {
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { useApp } from '../context/AppContext';
-import { chatWithStudyBuddy } from '../services/geminiService';
-import { ChatMessage } from '../types';
 
 const Dashboard: React.FC = () => {
-  const { user, studyMaterials, learningProgress, setActiveTab } = useApp();
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const { 
+    user, 
+    studyMaterials, 
+    learningProgress, 
+    setActiveTab,
+    chatMessages,
+    isLoadingChat,
+    sendMessage
+  } = useApp();
   const [inputMessage, setInputMessage] = useState('');
-  const [isLoading, setIsLoading] = useState(false);
-  const [chatHistory, setChatHistory] = useState<{ role: 'user' | 'model'; parts: { text: string }[] }[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -31,58 +34,18 @@ const Dashboard: React.FC = () => {
 
   useEffect(() => {
     scrollToBottom();
-  }, [messages]);
+  }, [chatMessages]);
 
   const handleSendMessage = async () => {
-    if (!inputMessage.trim() || isLoading) return;
+    if (!inputMessage.trim() || isLoadingChat) return;
 
-    const userMessage: ChatMessage = {
-      id: Date.now().toString(),
-      role: 'user',
-      content: inputMessage.trim(),
-      timestamp: new Date()
-    };
+    const context = studyMaterials.length > 0
+      ? studyMaterials.slice(0, 3).map(m => m.content).join('\n\n')
+      : undefined;
 
-    setMessages(prev => [...prev, userMessage]);
+    const message = inputMessage.trim();
     setInputMessage('');
-    setIsLoading(true);
-
-    try {
-      const context = studyMaterials.length > 0
-        ? studyMaterials.slice(0, 3).map(m => m.content).join('\n\n')
-        : undefined;
-
-      const response = await chatWithStudyBuddy(
-        userMessage.content,
-        context,
-        chatHistory
-      );
-
-      const assistantMessage: ChatMessage = {
-        id: (Date.now() + 1).toString(),
-        role: 'assistant',
-        content: response,
-        timestamp: new Date()
-      };
-
-      setMessages(prev => [...prev, assistantMessage]);
-      
-      setChatHistory(prev => [
-        ...prev,
-        { role: 'user', parts: [{ text: userMessage.content }] },
-        { role: 'model', parts: [{ text: response }] }
-      ]);
-    } catch (error) {
-      const errorMessage: ChatMessage = {
-        id: (Date.now() + 1).toString(),
-        role: 'assistant',
-        content: "I'm sorry, I encountered an error. Please try again.",
-        timestamp: new Date()
-      };
-      setMessages(prev => [...prev, errorMessage]);
-    } finally {
-      setIsLoading(false);
-    }
+    await sendMessage(message, context);
   };
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
@@ -138,7 +101,7 @@ const Dashboard: React.FC = () => {
 
         {/* Chat Area */}
         <div className="flex-1 overflow-y-auto p-6 space-y-4">
-          {messages.length === 0 ? (
+          {chatMessages.length === 0 ? (
             <div className="h-full flex flex-col items-center justify-center text-center">
               <div className="w-16 h-16 bg-gradient-to-br from-blue-500 to-blue-600 rounded-2xl flex items-center justify-center mb-4 shadow-lg shadow-blue-500/30">
                 <Bot className="w-8 h-8 text-white" />
@@ -167,7 +130,7 @@ const Dashboard: React.FC = () => {
               </div>
             </div>
           ) : (
-            messages.map((message) => (
+            chatMessages.map((message) => (
               <div
                 key={message.id}
                 className={`flex gap-3 message-enter ${
@@ -206,7 +169,7 @@ const Dashboard: React.FC = () => {
             ))
           )}
           
-          {isLoading && (
+          {isLoadingChat && (
             <div className="flex gap-3">
               <div className="w-8 h-8 rounded-full bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center">
                 <Bot className="w-4 h-4 text-white" />
@@ -225,7 +188,7 @@ const Dashboard: React.FC = () => {
         </div>
 
         {/* Action Tags */}
-        {messages.length > 0 && (
+        {chatMessages.length > 0 && (
           <div className="px-6 py-2 flex gap-2 flex-wrap">
             <button 
               onClick={() => setInputMessage("Explain common misconceptions about Newton's Laws")}
@@ -266,10 +229,10 @@ const Dashboard: React.FC = () => {
             </div>
             <button
               onClick={handleSendMessage}
-              disabled={!inputMessage.trim() || isLoading}
+              disabled={!inputMessage.trim() || isLoadingChat}
               className="w-11 h-11 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 text-white rounded-xl flex items-center justify-center transition-colors flex-shrink-0"
             >
-              {isLoading ? (
+              {isLoadingChat ? (
                 <Loader2 className="w-5 h-5 animate-spin" />
               ) : (
                 <Send className="w-5 h-5" />

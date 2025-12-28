@@ -121,3 +121,59 @@ export interface Achievement {
   progress?: number;
   requirement: number;
 }
+  
+// PDF Content Storage for quiz generation and revision
+export interface StoredContent {
+  id: string;
+  userId: string;
+  title: string;
+  fileName: string;
+  content: string; // Full extracted text from PDF
+  summary?: string; // AI-generated summary
+  topics: ExtractedTopic[];
+  createdAt: Date;
+  lastRevisedAt?: Date;
+  fileType: 'pdf' | 'doc' | 'docx' | 'txt';
+}
+
+export interface ExtractedTopic {
+  id: string;
+  name: string;
+  content: string; // Key points about this topic
+  keyTerms: string[];
+  difficulty: 'easy' | 'medium' | 'hard';
+  masteryLevel: number; // 0-100 based on quiz performance
+  quizCount: number;
+  lastQuizScore?: number;
+}
+
+// Revision Schedule
+export interface RevisionSchedule {
+  id: string;
+  userId: string;
+  contentId: string;
+  topicId: string;
+  topicName: string;
+  scheduleType: 'daily' | 'weekly' | 'monthly';
+  nextReviewDate: Date;
+  lastReviewDate?: Date;
+  reviewCount: number;
+  masteryLevel: number;
+  interval: number; // days until next review (spaced repetition)
+  easeFactor: number; // SM-2 algorithm ease factor
+}
+
+// Mock Test for comprehensive testing
+export interface MockTest {
+  id: string;
+  userId: string;
+  title: string;
+  topics: string[];
+  sourceContents: string[]; // content IDs used
+  questions: QuizQuestion[];
+  duration: number; // in minutes
+  createdAt: Date;
+  scheduledFor?: Date;
+  completedAt?: Date;
+  score?: number;
+}
