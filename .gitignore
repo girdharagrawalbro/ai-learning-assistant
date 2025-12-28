@@ -1,3 +1,13 @@
 node_modules
 functions/node_modules
 .env
+
+# Log files
+*.log
+firebase-debug.log
+firestore-debug.log
+ui-debug.log
+
+# Environment variables and secrets
+.env.local
+.env.*.local
